@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 # One-click installer for VLAN Agent V2 client-manager on a fresh VPS/VM.
+# Supports both source repositories and private runtime-package repositories.
 # Default usage:
 #   curl -fsSL https://raw.githubusercontent.com/caotranquochoai/VLAN-agent-V2/main/client-manager/scripts/install-vps.sh | bash
 # Optional overrides:
@@ -157,17 +158,38 @@ clone_repo() {
 }
 
 find_client_dir() {
+  local candidate
+  for candidate in "$BUILD_ROOT/repo/client-manager" "$BUILD_ROOT/repo"; do
+    if [[ -f "$candidate/proxy-client-manager" && -f "$candidate/bin/bridge_linux" ]]; then
+      CLIENT_SRC="$candidate"
+      CLIENT_MODE="runtime"
+      log "Client runtime package: ${CLIENT_SRC}"
+      return
+    fi
+  done
+
   if [[ -f "$BUILD_ROOT/repo/client-manager/go.mod" ]]; then
     CLIENT_SRC="$BUILD_ROOT/repo/client-manager"
+    CLIENT_MODE="source"
   elif [[ -f "$BUILD_ROOT/repo/go.mod" ]]; then
     CLIENT_SRC="$BUILD_ROOT/repo"
+    CLIENT_MODE="source"
   else
-    fail "Không tìm thấy client-manager/go.mod hoặc go.mod trong repository."
+    fail "Không tìm thấy runtime package (proxy-client-manager + bin/bridge_linux) hoặc source Go (client-manager/go.mod hoặc go.mod) trong repository."
   fi
   log "Client source: ${CLIENT_SRC}"
 }
 
 build_dashboard() {
+  if [[ "${CLIENT_MODE:-source}" == "runtime" ]]; then
+    if [[ -d "$CLIENT_SRC/web/dist" ]]; then
+      success "Dùng dashboard web/dist có sẵn trong runtime package."
+    else
+      warn "Runtime package không có web/dist. Dashboard có thể không hoạt động."
+    fi
+    return
+  fi
+
   if [[ ! -d "$CLIENT_SRC/web" || ! -f "$CLIENT_SRC/web/package.json" ]]; then
     warn "Không tìm thấy web/package.json, bỏ qua build dashboard."
     return
@@ -185,10 +207,18 @@ build_dashboard() {
 }
 
 build_client_binary() {
+  if [[ "${CLIENT_MODE:-source}" == "runtime" ]]; then
+    log "Dùng proxy-client-manager binary có sẵn trong runtime package"
+    run cp "$CLIENT_SRC/proxy-client-manager" "$BUILD_ROOT/proxy-client-manager"
+    run chmod +x "$BUILD_ROOT/proxy-client-manager"
+    [[ -x "$BUILD_ROOT/proxy-client-manager" ]] || fail "proxy-client-manager trong runtime package không chạy được."
+    return
+  fi
+
   log "Build proxy-client-manager Linux binary"
   pushd "$CLIENT_SRC" >/dev/null
   run go mod download
-  run env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o "$BUILD_ROOT/proxy-client-manager" ./cmd/proxy-client-manager
+  run env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="-s -w -buildid=" -o "$BUILD_ROOT/proxy-client-manager" ./cmd/proxy-client-manager
   popd >/dev/null
 
   [[ -x "$BUILD_ROOT/proxy-client-manager" ]] || fail "Build proxy-client-manager thất bại."
@@ -365,10 +395,14 @@ main() {
   log "Install dir: ${INSTALL_DIR}"
 
   install_base_packages
-  install_nodejs
-  install_go
   clone_repo
   find_client_dir
+  if [[ "${CLIENT_MODE:-source}" == "source" ]]; then
+    install_nodejs
+    install_go
+  else
+    success "Runtime package mode: bỏ qua cài Node.js/Go và bỏ qua build source."
+  fi
   build_dashboard
   build_client_binary
   prepare_bridge_binary
