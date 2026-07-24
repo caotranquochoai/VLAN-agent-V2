@@ -246,24 +246,91 @@ prepare_bridge_binary() {
   success "Đã chuẩn bị bridge_linux"
 }
 
+process_pids_for_executable() {
+  local expected_path="$1"
+  local proc exe pid
+  expected_path="$(readlink -f "$expected_path" 2>/dev/null || printf '%s' "$expected_path")"
+  for proc in /proc/[0-9]*; do
+    [[ -e "$proc/exe" ]] || continue
+    exe="$(readlink "$proc/exe" 2>/dev/null || true)"
+    exe="${exe% (deleted)}"
+    [[ "$exe" == "$expected_path" ]] || continue
+    pid="${proc#/proc/}"
+    printf '%s\n' "$pid"
+  done
+}
+
+stop_executable_processes() {
+  local executable="$1"
+  local label="$2"
+  local pids remaining attempt
+  pids="$(process_pids_for_executable "$executable")"
+  [[ -n "$pids" ]] || return 0
+
+  warn "Dừng ${label} còn chạy: $(printf '%s' "$pids" | tr '\n' ' ')"
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] && kill -TERM "$pid" 2>/dev/null || true
+  done <<< "$pids"
+
+  for attempt in 1 2 3 4 5; do
+    remaining="$(process_pids_for_executable "$executable")"
+    [[ -z "$remaining" ]] && return 0
+    sleep 1
+  done
+
+  warn "${label} không thoát sau SIGTERM; buộc dừng: $(printf '%s' "$remaining" | tr '\n' ' ')"
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] && kill -KILL "$pid" 2>/dev/null || true
+  done <<< "$remaining"
+
+  sleep 1
+  remaining="$(process_pids_for_executable "$executable")"
+  [[ -z "$remaining" ]] || fail "Không thể dừng ${label}, PID còn lại: $(printf '%s' "$remaining" | tr '\n' ' ')"
+}
+
 stop_existing_service() {
-  if command_exists systemctl && systemctl list-unit-files | grep -q "^${SERVICE_NAME}\.service"; then
-    warn "Dừng service cũ ${SERVICE_NAME} nếu đang chạy"
-    systemctl stop "${SERVICE_NAME}" || true
+  if command_exists systemctl; then
+    if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null || systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE_NAME}\.service"; then
+      warn "Dừng service cũ ${SERVICE_NAME}"
+      if ! systemctl stop "$SERVICE_NAME"; then
+        warn "systemctl stop ${SERVICE_NAME} thất bại; sẽ dừng theo executable path"
+      fi
+    fi
   fi
+
+  # Also handle a differently named service or a manually started process.
+  # Match /proc/<pid>/exe exactly to avoid killing unrelated commands.
+  stop_executable_processes "$INSTALL_DIR/proxy-client-manager" "Client Manager"
+  stop_executable_processes "$INSTALL_DIR/bin/bridge_linux" "Bridge"
 }
 
 install_files() {
   log "Cài runtime vào ${INSTALL_DIR}"
   run mkdir -p "$INSTALL_DIR/bin" "$INSTALL_DIR/data"
 
+  if [[ -f "$INSTALL_DIR/data/client.db" ]]; then
+    local backup_path
+    backup_path="$INSTALL_DIR/data/client.db.backup-$(date -u +%Y%m%dT%H%M%SZ)"
+    run cp -p "$INSTALL_DIR/data/client.db" "$backup_path"
+    run chmod 600 "$backup_path"
+    success "Đã backup SQLite: ${backup_path}"
+  fi
+
   if [[ -d "$INSTALL_DIR/web/dist" ]]; then
     run rm -rf "$INSTALL_DIR/web/dist"
   fi
   run mkdir -p "$INSTALL_DIR/web"
 
-  run cp "$BUILD_ROOT/proxy-client-manager" "$INSTALL_DIR/proxy-client-manager"
-  run cp "$BUILD_ROOT/bin/bridge_linux" "$INSTALL_DIR/bin/bridge_linux"
+  # Never overwrite a running executable in place: Linux may return ETXTBSY
+  # ("Text file busy") when the service name differs or an old binary was
+  # started manually. Copy to the same filesystem, then atomically rename it.
+  run cp "$BUILD_ROOT/proxy-client-manager" "$INSTALL_DIR/.proxy-client-manager.new"
+  run chmod 700 "$INSTALL_DIR/.proxy-client-manager.new"
+  run mv -f "$INSTALL_DIR/.proxy-client-manager.new" "$INSTALL_DIR/proxy-client-manager"
+
+  run cp "$BUILD_ROOT/bin/bridge_linux" "$INSTALL_DIR/bin/.bridge_linux.new"
+  run chmod 700 "$INSTALL_DIR/bin/.bridge_linux.new"
+  run mv -f "$INSTALL_DIR/bin/.bridge_linux.new" "$INSTALL_DIR/bin/bridge_linux"
 
   if [[ -d "$CLIENT_SRC/web/dist" ]]; then
     run cp -a "$CLIENT_SRC/web/dist" "$INSTALL_DIR/web/dist"
@@ -275,7 +342,10 @@ install_files() {
     run cp "$CLIENT_SRC/README.md" "$INSTALL_DIR/README.md"
   fi
 
-  run chmod +x "$INSTALL_DIR/proxy-client-manager" "$INSTALL_DIR/bin/bridge_linux"
+  run chown -R root:root "$INSTALL_DIR"
+  run chmod 700 "$INSTALL_DIR" "$INSTALL_DIR/bin" "$INSTALL_DIR/data" "$INSTALL_DIR/web"
+  run chmod 700 "$INSTALL_DIR/proxy-client-manager" "$INSTALL_DIR/bin/bridge_linux"
+  find "$INSTALL_DIR/data" -maxdepth 1 -type f -exec chmod 600 {} +
 }
 
 create_systemd_service() {
@@ -293,11 +363,22 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=root
+Group=root
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=${INSTALL_DIR}/proxy-client-manager serve --host ${LISTEN_HOST} --port ${PORT}
+Environment=CLIENT_MANAGER_ROOT=${INSTALL_DIR}
+ExecStart=${INSTALL_DIR}/proxy-client-manager --root ${INSTALL_DIR} serve --host ${LISTEN_HOST} --port ${PORT}
 Restart=always
 RestartSec=3
 LimitNOFILE=1048576
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectClock=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ReadWritePaths=${INSTALL_DIR}/data
 
 [Install]
 WantedBy=multi-user.target
