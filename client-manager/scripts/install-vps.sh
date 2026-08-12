@@ -368,7 +368,7 @@ User=root
 Group=root
 WorkingDirectory=${INSTALL_DIR}
 Environment=CLIENT_MANAGER_ROOT=${INSTALL_DIR}
-ExecStart=${INSTALL_DIR}/proxy-client-manager --root ${INSTALL_DIR} serve --host ${LISTEN_HOST} --port ${PORT}
+ExecStart=${INSTALL_DIR}/proxy-client-manager serve --host ${LISTEN_HOST} --port ${PORT}
 Restart=always
 RestartSec=3
 LimitNOFILE=1048576
@@ -388,6 +388,29 @@ EOF_SERVICE
   run systemctl daemon-reload
   run systemctl enable "$SERVICE_NAME"
   run systemctl restart "$SERVICE_NAME"
+}
+
+wait_for_client_manager() {
+  local attempt state
+  if ! command_exists systemctl; then
+    return 0
+  fi
+
+  log "Chờ Client Manager sẵn sàng trên 127.0.0.1:${PORT}"
+  for attempt in {1..40}; do
+    state="$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true)"
+    if [[ "$state" == "active" ]] && curl -fsS --max-time 2 "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1; then
+      success "Client Manager đã hoạt động và API đang listen port ${PORT}."
+      return 0
+    fi
+    sleep 0.5
+  done
+
+  printf '\n%bClient Manager không khởi động thành công.%b\n' "$COLOR_RED" "$COLOR_RESET" >&2
+  systemctl status "$SERVICE_NAME" --no-pager -l || true
+  printf '\n%bLog gần nhất:%b\n' "$COLOR_YELLOW" "$COLOR_RESET" >&2
+  journalctl -u "$SERVICE_NAME" -n 80 --no-pager || true
+  fail "Dừng cài đặt vì dashboard chưa sẵn sàng. Hãy sửa lỗi service trong log ở trên rồi chạy lại installer."
 }
 
 configure_firewall() {
@@ -530,6 +553,7 @@ main() {
   stop_existing_service
   install_files
   create_systemd_service
+  wait_for_client_manager
   configure_firewall
   check_ipv6
   print_summary
