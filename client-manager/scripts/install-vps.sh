@@ -21,6 +21,7 @@ SKIP_UFW="${SKIP_UFW:-0}"
 SKIP_FIREWALL_CMD="${SKIP_FIREWALL_CMD:-0}"
 BUILD_ROOT="${BUILD_ROOT:-/tmp/vlan-agent-v2-build}"
 RUN_AS_ROOT_ONLY="${RUN_AS_ROOT_ONLY:-1}"
+INSTALL_STARTED_AT="$(date --iso-8601=seconds)"
 
 COLOR_RESET="\033[0m"
 COLOR_GREEN="\033[32m"
@@ -427,10 +428,32 @@ check_ipv6() {
   fi
 }
 
+read_generated_admin_token() {
+  local token_line token attempt
+  if ! command_exists journalctl || ! command_exists systemctl; then
+    return 1
+  fi
+
+  for attempt in {1..20}; do
+    token_line="$(journalctl -u "$SERVICE_NAME" --since "$INSTALL_STARTED_AT" --no-pager -o cat 2>/dev/null \
+      | grep -F 'Admin token generated. Save it now:' \
+      | tail -n 1 || true)"
+    token="${token_line#*Admin token generated. Save it now: }"
+    token="$(printf '%s' "$token" | tr -d '\r\n')"
+    if [[ -n "$token" && "$token" != "$token_line" ]]; then
+      printf '%s' "$token"
+      return 0
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
 print_summary() {
-  local public_ip dashboard_url service_status
+  local public_ip dashboard_url service_status admin_token
   public_ip="$(curl -4 -fsS --max-time 5 https://ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}' || echo 'SERVER_IP')"
   dashboard_url="http://${public_ip}:${PORT}"
+  admin_token="$(read_generated_admin_token || true)"
 
   if command_exists systemctl; then
     service_status="$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true)"
@@ -448,12 +471,29 @@ Service     : ${SERVICE_NAME} (${service_status})
 Dashboard   : ${dashboard_url}
 Listen      : ${LISTEN_HOST}:${PORT}
 Proxy ports : ${PROXY_PORT_RANGE}
+EOF_SUMMARY
+
+  if [[ -n "$admin_token" ]]; then
+    printf '\n%b============================================================%b\n' "$COLOR_GREEN" "$COLOR_RESET"
+    printf '%bADMIN TOKEN: %s%b\n' "$COLOR_GREEN" "$admin_token" "$COLOR_RESET"
+    printf '%bHãy lưu token này ngay. Token chỉ được in khi tạo lần đầu.%b\n' "$COLOR_YELLOW" "$COLOR_RESET"
+    printf '%b============================================================%b\n' "$COLOR_GREEN" "$COLOR_RESET"
+  else
+    cat <<EOF_TOKEN_HELP
+
+Admin token không được tạo trong lần chạy này.
+- Nếu đây là bản cập nhật, hãy tiếp tục dùng token hiện tại.
+- Nếu mất token, đặt token mới trên VPS bằng lệnh:
+  ${INSTALL_DIR}/proxy-client-manager --root ${INSTALL_DIR} admin-token reset
+EOF_TOKEN_HELP
+  fi
+
+  cat <<EOF_SUMMARY
 
 Bước tiếp theo:
-1. Mở dashboard ở URL trên.
-2. Lấy admin token bằng lệnh:
-   journalctl -u ${SERVICE_NAME} -n 100 --no-pager
-3. Đăng nhập dashboard.
+1. Lưu admin token được in ở trên.
+2. Mở dashboard: ${dashboard_url}
+3. Nhập admin token tại bảng "Đăng nhập bằng admin token".
 4. Vào tab License và kích hoạt LAN Agent key.
 5. Vào tab Kiểm tra để xác nhận IPv6/bridge/quyền hệ thống.
 6. Tạo proxy thử, sau đó Start Bridge.
