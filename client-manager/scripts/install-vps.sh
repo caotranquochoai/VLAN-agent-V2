@@ -346,6 +346,18 @@ install_files() {
   run chown -R root:root "$INSTALL_DIR"
   run chmod 700 "$INSTALL_DIR" "$INSTALL_DIR/bin" "$INSTALL_DIR/data" "$INSTALL_DIR/web"
   run chmod 700 "$INSTALL_DIR/proxy-client-manager" "$INSTALL_DIR/bin/bridge_linux"
+
+  # Khởi tạo database và cấu hình sẵn key OEM nếu chưa cấu hình key nào
+  if command_exists sqlite3; then
+    sqlite3 "$INSTALL_DIR/data/client.db" "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);" 2>/dev/null || true
+    local existing_key
+    existing_key="$(sqlite3 "$INSTALL_DIR/data/client.db" "SELECT value FROM settings WHERE key='license_key';" 2>/dev/null || true)"
+    if [[ -z "$existing_key" ]]; then
+      sqlite3 "$INSTALL_DIR/data/client.db" "INSERT OR REPLACE INTO settings(key, value) VALUES('license_key', 'VIVUCLOUD-VPS-OEM');" 2>/dev/null || true
+      log "Đã nạp sẵn key OEM VivuCloud (VIVUCLOUD-VPS-OEM) cho VPS."
+    fi
+  fi
+
   find "$INSTALL_DIR/data" -maxdepth 1 -type f -exec chmod 600 {} +
 }
 
