@@ -1,5 +1,5 @@
 param(
-  [string]$Version = "0.1.0-dev",
+  [string]$Version = "0.0.8",
   [string]$OutDir = "dist-release"
 )
 
@@ -32,7 +32,9 @@ Remove-Item Env:GOARCH -ErrorAction SilentlyContinue
 Pop-Location
 
 Write-Host "==> Copying runtime assets"
-Copy-Item -Recurse -Force (Join-Path $Root "web\dist") (Join-Path $PackageDir "web")
+New-Item -ItemType Directory -Force (Join-Path $PackageDir "web\dist") | Out-Null
+Copy-Item -Recurse -Force (Join-Path $Root "web\dist\*") (Join-Path $PackageDir "web\dist")
+Copy-Item -Recurse -Force (Join-Path $Root "web\dist\*") (Join-Path $PackageDir "web")
 if (Test-Path (Join-Path $Root "bin\bridge_linux")) {
   Copy-Item -Force (Join-Path $Root "bin\bridge_linux") (Join-Path $PackageDir "bin\bridge_linux")
 } else {
