@@ -317,10 +317,9 @@ install_files() {
     success "Đã backup SQLite: ${backup_path}"
   fi
 
-  if [[ -d "$INSTALL_DIR/web/dist" ]]; then
-    run rm -rf "$INSTALL_DIR/web/dist"
-  fi
-  run mkdir -p "$INSTALL_DIR/web"
+  # Xóa sạch web cũ (cả web và web/dist) để tránh conflict asset của các phiên bản trước
+  run rm -rf "$INSTALL_DIR/web"
+  run mkdir -p "$INSTALL_DIR/web/dist"
 
   # Never overwrite a running executable in place: Linux may return ETXTBSY
   # ("Text file busy") when the service name differs or an old binary was
@@ -334,9 +333,13 @@ install_files() {
   run mv -f "$INSTALL_DIR/bin/.bridge_linux.new" "$INSTALL_DIR/bin/bridge_linux"
 
   if [[ -d "$CLIENT_SRC/web/dist" ]]; then
-    run cp -a "$CLIENT_SRC/web/dist" "$INSTALL_DIR/web/dist"
+    run cp -a "$CLIENT_SRC/web/dist/." "$INSTALL_DIR/web/dist/"
+    run cp -a "$CLIENT_SRC/web/dist/." "$INSTALL_DIR/web/"
+  elif [[ -d "$CLIENT_SRC/web" ]]; then
+    run cp -a "$CLIENT_SRC/web/." "$INSTALL_DIR/web/"
+    run cp -a "$CLIENT_SRC/web/." "$INSTALL_DIR/web/dist/"
   else
-    warn "Không có web/dist để copy. Dashboard có thể không hoạt động."
+    warn "Không có web để copy. Dashboard có thể không hoạt động."
   fi
 
   if [[ -f "$CLIENT_SRC/README.md" ]]; then
