@@ -428,6 +428,25 @@ wait_for_client_manager() {
   fail "Dừng cài đặt vì dashboard chưa sẵn sàng. Hãy sửa lỗi service trong log ở trên rồi chạy lại installer."
 }
 
+tune_kernel_network() {
+  log "Tối ưu hóa sysctl mạng cho hệ thống proxy IPv6"
+  cat > /etc/sysctl.d/99-proxy-client-manager.conf << 'EOF_SYSCTL'
+# Tối ưu hóa cho Proxy Client Manager
+net.ipv6.ip_nonlocal_bind = 1
+net.ipv6.route.max_size = 262144
+net.ipv6.neigh.default.gc_thresh1 = 8192
+net.ipv6.neigh.default.gc_thresh2 = 32768
+net.ipv6.neigh.default.gc_thresh3 = 65536
+net.core.somaxconn = 65535
+net.ipv4.tcp_max_syn_backlog = 65535
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.ip_local_port_range = 1024 65535
+fs.file-max = 2097152
+EOF_SYSCTL
+  sysctl --system >/dev/null 2>&1 || sysctl -p /etc/sysctl.d/99-proxy-client-manager.conf >/dev/null 2>&1 || true
+  success "Đã tối ưu hóa sysctl mạng (IPv6 route, neighbor table, connection limit)"
+}
+
 configure_firewall() {
   log "Cấu hình firewall nếu có"
 
@@ -569,6 +588,7 @@ main() {
   install_files
   create_systemd_service
   wait_for_client_manager
+  tune_kernel_network
   configure_firewall
   check_ipv6
   print_summary
